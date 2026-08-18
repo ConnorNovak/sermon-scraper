@@ -6,10 +6,12 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "mutagen>=1.48.1",
+    "pandas>=3.0.5",
     "plac>=1.4.5",
     "playwright>=1.61.0",
     "pydantic>=2.13.4",
     "requests>=2.34.2",
+    "rich>=15.0.0",
     "tqdm>=4.69.0",
 ]
 
@@ -17,7 +19,32 @@ dependencies = [
 dev = [
     "ipython>=9.15.0",
     "mypy>=2.3.0",
+    "pandas-stubs>=3.0.5.260730",
     "pytest>=9.1.1",
     "ruff>=0.15.22",
     "types-tqdm>=4.69.0.20260724",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.mypy]
+# https://adamj.eu/tech/2021/05/25/python-type-hints-specific-type-ignore/
+show_error_codes = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# PLC0415 = Local import at the top of the file
+# Added at the behest of Claude to catch the AI anti-pattern of liberally mixing imports throughout
+# the file instead of grouping them at the top.
+# Seeing this issue erroneously cause you're deliberately using a local import?
+# Use `# noqa: PLC0415` to ignore this check for the specific line.
+# I = isort
+# NPY = numpy
+# RUF022 = sort __all__ lists
+select = ["PLC0415", "F", "I", "RUF022"]

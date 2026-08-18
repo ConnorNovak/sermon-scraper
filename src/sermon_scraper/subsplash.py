@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import shutil
-import sys
 import time
 from collections.abc import Iterator
 from datetime import datetime
@@ -17,12 +16,13 @@ from pathlib import Path
 
 import plac  # type: ignore [import-untyped]
 import requests
-from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1, TALB, TDRC, TCON, APIC
+from mutagen.id3 import APIC, ID3, TALB, TCON, TDRC, TIT2, TPE1, ID3NoHeaderError
 from playwright.sync_api import sync_playwright
 from pydantic import BaseModel
 from tqdm import tqdm
 
-from .model import MediaItem, MediaSeries
+from .ui.cli import output_dir_annotation, prompt_choice, prompt_yes_no
+from .utilities import slugify
 
 _logger = logging.getLogger(__name__)
 
@@ -36,59 +36,6 @@ APP_KEY = "6QVR5X"
 API_BASE = "https://core.subsplash.com"
 REQUEST_DELAY_SECONDS = 0.3
 PAGE_SIZE = 50
-
-
-# --- UI ----------------------------------------------------------------------
-
-output_dir_annotation = plac.Annotation(
-    help="directory to write series/episodes into",
-    kind="option",
-    type=Path,
-)
-
-
-def prompt_choice(choices: list[str]) -> int:
-    """Prompt the user to choose from a list of choices, returning the index of the selected choice.
-
-    :param choices: A list of strings representing the choices.
-    :return: The index of the selected choice in the choices list.
-    :raises SystemExit: If the user chooses to quit by entering 'q'.
-    """
-    while True:
-        buf = len(str(len(choices)))
-        for i, choice in enumerate(choices):
-            print(f"{i + 1:{buf}}) {choice}")
-        selection = input("Select entry by number [1-N|q]: ")
-        if selection.lower() == "q":
-            raise sys.exit("User chose to quit.")
-        try:
-            index = int(selection) - 1
-            if 0 <= index < len(choices):
-                return index
-            else:
-                print(
-                    f"Invalid choice. Please enter a number between 1 and {len(choices)}."
-                )
-        except ValueError:
-            print("Invalid input. Please enter a number.")
-
-
-def prompt_yes_no(question: str) -> bool:
-    """Prompt the user with a yes/no question and return True for yes, False for no.
-
-    :param question: The question to ask the user.
-    :return: True if the user answered yes, False if the user answered no.
-    """
-    while True:
-        answer = input(f"{question} [y|n|q]: ").strip().lower()
-        if answer == "q":
-            raise SystemExit("User chose to quit.")
-        if answer in ("y", "yes"):
-            return True
-        elif answer in ("n", "no"):
-            return False
-        else:
-            print("Invalid input. Please enter 'y' or 'n'.")
 
 
 # --- Auth --------------------------------------------------------------------
@@ -176,20 +123,14 @@ def list_episodes(session: requests.Session, series_id: str):
 # --- Extraction helpers -----------------------------------------------------
 
 
-def slugify(text: str) -> str:
-    """Convert a string into a slug suitable for filenames or URLs."""
-    text = re.sub(r"[^\w\s-]", "", text).strip().lower()
-    return re.sub(r"[\s_-]+", "-", text)
-
-
 def get_mp3_url(episode: dict) -> str | None:
     """Return the url of the corresponding mp3 file, or None if not available."""
     # Check the _embedded dict for audio
     url: str | None = None
     try:
-        url = episode["_embedded"]["audio"]["_embedded"]["audio-outputs"][0]["_links"][
-            "related"
-        ]["href"]
+        url = episode["_embedded"]["audio"]["_embedded"]["audio-outputs"][0]["_links"]["related"][
+            "href"
+        ]
         if "external_audio_url" in episode:
             _logger.warning(
                 "%s has both embedded audio and external_audio_url, using embedded audio",
@@ -248,9 +189,7 @@ def download_file(session: requests.Session, url: str, dest: Path):
     total = int(resp.headers.get("content-length", 0))
     with (
         open(dest, "wb") as f,
-        tqdm(
-            total=total, unit="B", unit_scale=True, unit_divisor=1024, desc=dest.name
-        ) as bar,
+        tqdm(total=total, unit="B", unit_scale=True, unit_divisor=1024, desc=dest.name) as bar,
     ):
         for chunk in resp.iter_content(chunk_size=1 << 16):
             f.write(chunk)
@@ -484,9 +423,7 @@ def download_all(
         video = True
         images = True
 
-    _logger.debug(
-        "audio: %s, video: %s, images: %s, nocache: %s", audio, video, images, nocache
-    )
+    _logger.debug("audio: %s, video: %s, images: %s, nocache: %s", audio, video, images, nocache)
     if not noprompt and not prompt_yes_no("Continue?"):
         raise RuntimeError("user aborted")
     token = get_guest_token()
@@ -519,9 +456,7 @@ def download_all(
 
 
 @plac.annotations(
-    series_slug=plac.Annotation(
-        "series slug to download (e.g. 'matthew')", "positional"
-    ),
+    series_slug=plac.Annotation("series slug to download (e.g. 'matthew')", "positional"),
     output_dir=output_dir_annotation,
 )
 def download_series(
@@ -561,8 +496,8 @@ def download_series(
             episode,
             series_dir,
             want_audio=True,
-            want_video=True,
-            want_images=True,
+            want_video=False,
+            want_images=False,
             nocache=False,
         )
     return
@@ -654,7 +589,7 @@ def _parse_title(title: str) -> str:
     output_dir=output_dir_annotation,
     replace=plac.Annotation(
         "Replace the files in the output directory instead of copying them.", kind="flag"
-    )
+    ),
 )
 def rename_files(
     target_dir: Path,
@@ -678,9 +613,7 @@ def rename_files(
         output_dir = target_dir
 
     if not output_dir.exists():
-        if not prompt_yes_no(
-            f"Output directory '{output_dir}' does not exist. Create it?"
-        ):
+        if not prompt_yes_no(f"Output directory '{output_dir}' does not exist. Create it?"):
             raise RuntimeError(f"Output directory '{output_dir}' does not exist.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -730,7 +663,7 @@ def rename_files(
     output_dir=output_dir_annotation,
     replace=plac.Annotation(
         "Replace the files in the output directory instead of copying them.", kind="flag"
-    )
+    ),
 )
 def generate_drew_csv(
     target_dir: Path,
@@ -754,9 +687,7 @@ def generate_drew_csv(
         output_dir = target_dir
 
     if not output_dir.exists():
-        if not prompt_yes_no(
-            f"Output directory '{output_dir}' does not exist. Create it?"
-        ):
+        if not prompt_yes_no(f"Output directory '{output_dir}' does not exist. Create it?"):
             raise RuntimeError(f"Output directory '{output_dir}' does not exist.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -793,9 +724,3 @@ def generate_drew_csv(
             else:
                 old_path.rename(new_path)
             print(f"Renamed: {old_path} | {new_path}")
-
-
-if __name__ == "__main__":
-    # plac.call(main)
-    plac.call(download_series)
-    # plac.call(rename_files)

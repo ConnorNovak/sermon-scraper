@@ -11,6 +11,7 @@ Then in the REPL:
 """
 
 import code
+
 import plac  # type: ignore [import-untyped]
 import requests
 
