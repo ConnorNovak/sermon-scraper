@@ -1,12 +1,10 @@
 """Terminal User Interface for the sermon-scraper, built with rich and plac."""
 
 import logging
-import pathlib
 import subprocess
-import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from tkinter import filedialog
+from pathlib import Path
 from typing import Sequence
 from urllib.parse import urlparse
 
@@ -17,8 +15,14 @@ from rich.console import Console
 from rich.table import Table
 from tqdm import tqdm
 
-from ..utilities import slugify
+from ..constants import DEFAULT_CSV
+from ..utilities import retrieve_resource, retrieve_resource_length_in_bytes, slugify
 from .cli import csv_file_annotation
+from .dialog import (
+    get_directory,
+    get_report_file_dialog,
+    load_csv_file_dialog,
+)
 
 SPEAKER_KEY = "preachers"
 SERIES_KEY = "series"
@@ -41,53 +45,13 @@ _console = Console(highlight=False)
 _logger = logging.getLogger(__name__)
 
 
-def retrieve_resource_length_in_bytes(url: str, session: requests.Session | None = None) -> int:
-    """Retrieve the length of a resource in bytes from its URL.
-
-    :param url: The URL of the resource.
-    :param session: Optional requests.Session to use for the request. If None, a new session will be
-        created.
-    :return: The length of the resource in bytes.
-    """
-    if session is None:
-        rsp = requests.head(url, allow_redirects=True)
-    else:
-        rsp = session.head(url, allow_redirects=True)
-
-    if rsp.status_code == 200:
-        return int(rsp.headers.get("Content-Length", 0))
-    else:
-        raise ValueError(f"Failed to retrieve resource length for URL: {url}")
-
-
-def retrieve_resource(
-    url: str, destination: pathlib.Path, session: requests.Session | None = None
-) -> None:
-    """Download a resources to a file given its URL.
-
-    :param url: The URL of the resourcee.
-    :param destination: The path to save the downloaded resource.
-    :param session: Optional requests.Session to use for downloading. If None, a new session will be
-        created.
-    """
-    if session is None:
-        rsp = requests.get(url, stream=True)
-    else:
-        rsp = session.get(url, stream=True)
-
-    rsp.raise_for_status()
-    with destination.open("wb") as f:
-        for chunk in rsp.iter_content(chunk_size=8192):
-            f.write(chunk)
-
-
 def calculate_resource_sizes(
     df: pd.DataFrame,
     url_column_name: str,
     max_worker_count: int,
     new_column_name: str,
     overwrite: bool = False,
-    session: requests.Session | None = None
+    session: requests.Session | None = None,
 ) -> None:
     """Calculate the sizes of resources in MB for a given URL column in a DataFrame.
 
@@ -142,18 +106,24 @@ def _get_git_info() -> tuple[str, bool]:
     :return: ("unknown", False) if git is unavailable or this isn't a git checkout (e.g.
         installed from a built wheel).
     """
-    repo_dir = pathlib.Path(__file__).resolve().parent
+    repo_dir = Path(__file__).resolve().parent
     try:
         commit_hash = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=repo_dir, capture_output=True, text=True, check=True,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         status = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=repo_dir, capture_output=True, text=True, check=True,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
         return commit_hash, bool(status.strip())
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except subprocess.CalledProcessError, FileNotFoundError:
         return "unknown", False
 
 
@@ -197,7 +167,9 @@ def generate_report(
     """
     console = Console(record=True, width=100, highlight=False)
 
-    size_columns = [c for c in (NOTES_SIZE_MB_KEY, AUDIO_SIZE_MB_KEY, VIDEO_SIZE_MB_KEY) if c in df.columns]
+    size_columns = [
+        c for c in (NOTES_SIZE_MB_KEY, AUDIO_SIZE_MB_KEY, VIDEO_SIZE_MB_KEY) if c in df.columns
+    ]
 
     def total_size_mb(sub_df: pd.DataFrame) -> float:
         if not size_columns:
@@ -251,7 +223,9 @@ def generate_report(
     ]
     missing = [(col, cmd) for col, cmd in missing_column_hints if col not in df.columns]
     if missing:
-        console.print("[yellow]Warning:[/yellow] some report data will be incomplete. Run these first:")
+        console.print(
+            "[yellow]Warning:[/yellow] some report data will be incomplete. Run these first:"
+        )
         for col, cmd in missing:
             console.print(f"  - '{col}' missing → run '[bold]{cmd}[/bold]'")
         console.print()
@@ -264,7 +238,9 @@ def generate_report(
     overview.add_row("Total sermons", str(len(df)))
     if AUDIO_SIZE_MB_KEY in df.columns:
         total_audio_mb = float(df[AUDIO_SIZE_MB_KEY].sum())
-        overview.add_row(f"Total audio size ({filesize_units})", f"{convert_size(total_audio_mb):,.1f}")
+        overview.add_row(
+            f"Total audio size ({filesize_units})", f"{convert_size(total_audio_mb):,.1f}"
+        )
     console.print(overview)
     console.print()
 
@@ -282,7 +258,9 @@ def generate_report(
         speaker_table.add_column("Source", justify="left")
         for speaker in sorted(df[SPEAKER_KEY].dropna().unique()):
             sub = df[df[SPEAKER_KEY] == speaker]
-            series_titles = sorted(sub[SERIES_KEY].dropna().unique()) if SERIES_KEY in sub.columns else []
+            series_titles = (
+                sorted(sub[SERIES_KEY].dropna().unique()) if SERIES_KEY in sub.columns else []
+            )
             speaker_table.add_row(
                 str(speaker),
                 str(len(sub)),
@@ -311,7 +289,9 @@ def generate_report(
         series_table.add_column("Source", justify="left")
         for series in sorted(df[SERIES_KEY].dropna().unique()):
             sub = df[df[SERIES_KEY] == series]
-            speakers = sorted(sub[SPEAKER_KEY].dropna().unique()) if SPEAKER_KEY in sub.columns else []
+            speakers = (
+                sorted(sub[SPEAKER_KEY].dropna().unique()) if SPEAKER_KEY in sub.columns else []
+            )
             series_table.add_row(
                 str(series),
                 str(len(sub)),
@@ -330,10 +310,10 @@ def generate_report(
 
 def download_resources(
     resources: Sequence[tuple[str, str]],
-    destination_dir: pathlib.Path,
+    destination_dir: Path,
     max_worker_count: int,
     overwrite: bool = False,
-    session: requests.Session | None = None
+    session: requests.Session | None = None,
 ) -> None:
     """Calculate the sizes of resources in MB for a given URL column in a DataFrame.
 
@@ -347,7 +327,10 @@ def download_resources(
     with ThreadPoolExecutor(max_workers=max_worker_count) as executor:
         futures = [
             executor.submit(
-                retrieve_resource, resource[0], destination_dir / (resource[1] + resource[0][-4:]), session=session
+                retrieve_resource,
+                resource[0],
+                destination_dir / (resource[1] + resource[0][-4:]),
+                session=session,
             )
             for resource in resources
             if pd.notnull(resource[0])
@@ -383,10 +366,10 @@ class TUI:
         destination_dir=plac.Annotation(
             help="Directory to download the series to. If None, will prompt for a directory.",
             kind="option",
-            type=pathlib.Path,
+            type=Path,
         ),
     )
-    def download(self, series: str, destination_dir: pathlib.Path | None = None) -> None:
+    def download(self, series: str, destination_dir: Path | None = None) -> None:
         """Download all resources for a given series."""
         if self._df is None:
             _console.print("[red]Error:[/red] No CSV file loaded. Please load a CSV file first.")
@@ -412,7 +395,9 @@ class TUI:
                 (sub_df[AUDIO_KEY].iloc[i], slugify(str(sub_df[SERMON_ID_KEY].iloc[i])))
                 for i in range(len(sub_df))
             ]
-            download_resources(resources, destination_dir, self._max_worker_count, session=self._session)
+            download_resources(
+                resources, destination_dir, self._max_worker_count, session=self._session
+            )
 
     @plac.annotations(
         key=plac.Annotation(
@@ -466,7 +451,7 @@ class TUI:
     @plac.annotations(
         csv_file=csv_file_annotation,
     )
-    def load(self, csv_file: pathlib.Path | str) -> None:
+    def load(self, csv_file: Path | str) -> None:
         """Load a CSV file into the TUI.
 
         :param csv_file: Path to the CSV file to load. If "None", unloads the csv file.
@@ -505,7 +490,7 @@ class TUI:
     @plac.annotations(
         mode=plac.Annotation(
             help="The mode of resources to calculate sizes for. Can be 'notes', 'audio', 'video', or "
-                 "'source' (divides audio by hosting source).",
+            "'source' (divides audio by hosting source).",
             choices=[NOTES_KEY, AUDIO_KEY, VIDEO_KEY, SOURCE_MODE],
         ),
         overwrite=plac.Annotation(
@@ -526,9 +511,7 @@ class TUI:
 
         modes = (NOTES_KEY, AUDIO_KEY, VIDEO_KEY, SOURCE_MODE)
         if mode not in modes:
-            _console.print(
-                f"[red]Error:[/red] Invalid mode '{mode}'. Please choose from {modes}."
-            )
+            _console.print(f"[red]Error:[/red] Invalid mode '{mode}'. Please choose from {modes}.")
             return
 
         if mode == SOURCE_MODE:
@@ -559,7 +542,7 @@ class TUI:
             max_worker_count=self._max_worker_count,
             new_column_name=new_column_name,
             overwrite=overwrite,
-            session=self._session
+            session=self._session,
         )
         _console.print(
             f"[green]Calculated sizes for '{mode}' resources and stored in column '{new_column_name}'.[/green]"
@@ -568,7 +551,7 @@ class TUI:
     @plac.annotations(
         csv_file=csv_file_annotation,
     )
-    def save(self, csv_file: pathlib.Path | str) -> None:
+    def save(self, csv_file: Path | str) -> None:
         """Save the current DataFrame to a CSV file.
 
         :param csv_file: Path to the CSV file to save. If "None", will not save.
@@ -594,10 +577,10 @@ class TUI:
         output_file=plac.Annotation(
             help="Path to write the report HTML to. If None, will prompt for a file to save to.",
             kind="option",
-            type=pathlib.Path,
+            type=Path,
         ),
     )
-    def report(self, report_title: str, output_file: pathlib.Path | None = None) -> None:
+    def report(self, report_title: str, output_file: Path | None = None) -> None:
         """Generate a report on the loaded sermon data and write it out as HTML.
 
         :param report_title: Title for the report.
@@ -628,55 +611,10 @@ class TUI:
         self.should_exit = True
 
 
-DEFAULT_CSV = pathlib.Path(__file__).resolve().parents[3] / "data" / "local_backup.csv"
-
-
-def load_csv_file_dialog() -> pathlib.Path | None:
-    """Open a file dialog to select a CSV file.
-
-    :return: The selected CSV file path, or None if no file was selected.
-    """
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
-    csv_file_path = filedialog.askopenfilename(
-        initialdir=DEFAULT_CSV.parent,
-        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-    )
-    return pathlib.Path(csv_file_path) if csv_file_path else None
-
-
-def get_report_file_dialog() -> pathlib.Path | None:
-    """Open a file dialog to select where to save the report HTML.
-
-    :return: The selected file path, or None if no file was selected.
-    """
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
-    file_path = filedialog.asksaveasfilename(
-        initialdir=DEFAULT_CSV.parent,
-        defaultextension=".html",
-        filetypes=[("HTML files", "*.html"), ("All files", "*.*")],
-    )
-    return pathlib.Path(file_path) if file_path else None
-
-
-def get_directory() -> pathlib.Path | None:
-    """Open a file dialog to select a directory.
-
-    :return: The selected directory path, or None if no directory was selected.
-    """
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
-    dir_path = filedialog.askdirectory(
-        initialdir=DEFAULT_CSV.parent,
-    )
-    return pathlib.Path(dir_path) if dir_path else None
-
-
 @plac.annotations(
     csv_file=csv_file_annotation,
 )
-def main(csv_file: pathlib.Path | None = None) -> None:
+def main(csv_file: Path | None = None) -> None:
     """Run the sermon-scraper TUI."""
     tui = TUI()
 
