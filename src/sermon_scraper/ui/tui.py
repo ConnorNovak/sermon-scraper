@@ -193,13 +193,21 @@ def generate_report(
         found = sorted(sub_df[AUDIO_SOURCE_KEY].dropna().unique())
         return ", ".join(found) if found else "-"
 
-    table_style = dict(
-        title_style="blue",
-        header_style="white",
-        border_style="blue",
-        row_styles=["white", "dim"],
-        show_lines=True,
-    )
+    def make_table(
+        *,
+        title: str | None = None,
+        show_header: bool = True,
+        row_styles: Sequence[str] = ("white", "dim"),
+    ) -> Table:
+        return Table(
+            title=title,
+            show_header=show_header,
+            title_style="blue",
+            header_style="white",
+            border_style="blue",
+            row_styles=list(row_styles),
+            show_lines=True,
+        )
 
     valid_units = ("KB", "MB", "GB")
     if filesize_units not in valid_units:
@@ -232,7 +240,7 @@ def generate_report(
 
     # --- Section 1: Overview ---
     console.rule("[bold]Section 1: Overview[/bold]")
-    overview = Table(show_header=False, **{**table_style, "row_styles": ["white"]})
+    overview = make_table(show_header=False, row_styles=("white",))
     overview.add_column("metric", justify="left")
     overview.add_column("value", justify="right")
     overview.add_row("Total sermons", str(len(df)))
@@ -249,7 +257,7 @@ def generate_report(
         console.rule("[bold]Section 2: Speakers[/bold]")
         console.print(f"Unique speakers: {df[SPEAKER_KEY].nunique()}")
         console.print()
-        speaker_table = Table(**table_style)
+        speaker_table = make_table()
         speaker_table.add_column("Speaker", justify="left")
         speaker_table.add_column("# Sermons", justify="right")
         speaker_table.add_column("Date Range", justify="left")
@@ -280,7 +288,7 @@ def generate_report(
         console.rule("[bold]Section 3: Series[/bold]")
         console.print(f"Unique series: {df['series'].nunique()}")
         console.print()
-        series_table = Table(**table_style)
+        series_table = make_table()
         series_table.add_column("Series", justify="left")
         series_table.add_column("# Sermons", justify="right")
         series_table.add_column("Date Range", justify="left")
@@ -410,6 +418,10 @@ class TUI:
         :param key: key to list instances for - will be slugified. If None given, prints a list of
             available keys.
         """
+        if self._df is None:
+            _console.print("[red]Error:[/red] No CSV file loaded. Please load a CSV file first.")
+            return
+
         if key is not None:
             slug = slugify(key)
             if slug not in self._df.columns:
@@ -468,6 +480,9 @@ class TUI:
             del self._df  # free the memory!
             self._df = None
             return
+
+        if not isinstance(csv_file, Path):
+            csv_file = Path(csv_file)
 
         if not csv_file.exists():
             _console.print(f"[red]Error:[/red] CSV file not found: {csv_file}")

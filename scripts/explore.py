@@ -15,7 +15,7 @@ import code
 import plac  # type: ignore [import-untyped]
 import requests
 
-from main import API_BASE, APP_KEY, get_guest_token
+from sermon_scraper.subsplash import API_BASE, APP_KEY, get_guest_token
 
 
 def get(session: requests.Session, url: str, params) -> dict:
