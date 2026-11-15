@@ -47,3 +47,23 @@ scraping HTML, so `main.py` uses this instead of BeautifulSoup:
 I've got the login for the backend of Ekklesia now. It seems easier? An easily downloadable .csv
 of the database is available, so I'll just grab that and go from there? Maybe I can scrape an
 identical csv from subsplash...
+
+# Usage
+
+To run the `explore.py` script and poke around at the data downloaded from Ekklesia and Subsplash, run:
+```
+uv run jupyter lab notebooks/###.ipynb
+```
+
+# How-to Instructions
+
+The following are some quick-start howtos to perform certain tasks.
+
+## Download all of the .mp3 files and metadata from Ekklesia
+
+1. Download the Ekklesia .csv (see instructions in ./data/ekklesia/README.md)
+
+2. Run the download_files script.
+```
+uv run scripts/download_files.py ./data/ekklesia/sermonExportSeb_22_2026.csv ./data/ekklesia/sermons/
+```

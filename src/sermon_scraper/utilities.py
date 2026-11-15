@@ -1,7 +1,39 @@
+import logging
 import re
-from pathlib import Path
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Sequence
+from urllib.parse import urlparse
 
-import requests
+_logger = logging.getLogger(__name__)
+
+
+def get_hostname(url: str) -> str:
+    """Extract the hostname from a URL.
+
+    :param url: The URL to extract the hostname from.
+    :return: The hostname, or the full url if it cannot be extracted.
+    """
+    try:
+        parsed_url = urlparse(url)
+        if parsed_url.hostname is None:
+            raise ValueError(f"URL '{url}' does not contain a valid hostname.")
+        return parsed_url.hostname
+    except Exception as e:
+        _logger.error("Error parsing URL '%s': %s", url, e)
+        return url  # Fallback to returning the full URL if parsing fails
+
+
+def log_level_type(value: str) -> int:
+    """Convert a string log level to the corresponding logging module constant."""
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return int(getattr(logging, value.upper()))
+    except AttributeError:
+        raise ValueError(f"Invalid log level: {value}")
 
 
 def slugify(text: str) -> str:
@@ -10,42 +42,32 @@ def slugify(text: str) -> str:
     return re.sub(r"[\s_-]+", "-", text)
 
 
-# --- Resource Retrieval Methods -------------------------------------------------------------------
+def sort_by_host(urls: Sequence[str]) -> dict[str, list[str]]:
+    """Sort a list of URLs by their hostnames.
 
-
-def retrieve_resource_length_in_bytes(url: str, session: requests.Session | None = None) -> int:
-    """Retrieve the length of a resource in bytes from its URL.
-
-    :param url: The URL of the resource.
-    :param session: Optional requests.Session to use for the request. If None, a new session will be
-        created.
-    :return: The length of the resource in bytes.
+    :param urls: A sequence of URLs to sort.
+    :return: A list of URLs sorted by their hostnames.
     """
-    if session is None:
-        rsp = requests.head(url, allow_redirects=True)
-    else:
-        rsp = session.head(url, allow_redirects=True)
-
-    if rsp.status_code == 200:
-        return int(rsp.headers.get("Content-Length", 0))
-    else:
-        raise ValueError(f"Failed to retrieve resource length for URL: {url}")
+    sorted_urls: dict[str, list[str]] = {}
+    for url in urls:
+        host = get_hostname(url)
+        if host not in sorted_urls:
+            sorted_urls[host] = []
+        sorted_urls[host].append(url)
+    return sorted_urls
 
 
-def retrieve_resource(url: str, destination: Path, session: requests.Session | None = None) -> None:
-    """Download a resources to a file given its URL.
-
-    :param url: The URL of the resourcee.
-    :param destination: The path to save the downloaded resource.
-    :param session: Optional requests.Session to use for downloading. If None, a new session will be
-        created.
-    """
-    if session is None:
-        rsp = requests.get(url, stream=True)
-    else:
-        rsp = session.get(url, stream=True)
-
-    rsp.raise_for_status()
-    with destination.open("wb") as f:
-        for chunk in rsp.iter_content(chunk_size=8192):
-            f.write(chunk)
+def parse_retry_after(value: str | None) -> float | None:
+    """Retry-After is either delta-seconds or an HTTP-date (RFC 7231)."""
+    if value is None:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max((dt - datetime.now(timezone.utc)).total_seconds(), 0.0)
+    except TypeError, ValueError:
+        return None
