@@ -16,9 +16,15 @@ from rich.table import Table
 from tqdm import tqdm
 
 from ..constants import DEFAULT_CSV
-from ..rate_limit import KeyedRateLimiter
-from ..retrieve import retrieve_resource, retrieve_resource_length_in_bytes
-from ..utilities import slugify
+from ..rate_limit import KeyedRateLimiter, RetryAdjustedforRateLimiter
+from ..retrieve import (
+    retrieve_resource,
+    retrieve_resource_length_in_bytes,
+)
+from ..utilities import (
+    log_level_type,
+    slugify,
+)
 from .cli import csv_file_annotation
 from .dialog import (
     get_directory,
@@ -54,8 +60,9 @@ def calculate_resource_sizes(
     new_column_name: str,
     overwrite: bool = False,
     session: requests.Session | None = None,
+    no_tqdm: bool = False,
 ) -> None:
-    """Calculate the sizes of resources in MB for a given URL column in a DataFrame.
+    """Calculate the sizes of resources in bytes for a given URL column in a DataFrame.
 
     :note: Modifies the DataFrame in place by adding a new column with the calculated sizes.
 
@@ -63,26 +70,45 @@ def calculate_resource_sizes(
     :param url_column_name: The name of the column containing the URLs.
     :param max_worker_count: The maximum number of worker threads to use for downloading.
     :param new_column_name: The name of the new column to store the sizes in MB.
-    :param overwrite: If True, will overwrite the new column if it already exists. If False, will raise an error if the new column already exists.
+    :param overwrite: If True, re-fetches and overwrites every row, including ones that already
+        have a cached value. If False (default) and the column already exists, only rows missing
+        a value are fetched - previously-cached values are left untouched, not re-fetched.
+    :param session: Optional requests.Session to use for the requests. If None, a new session will be created.
+    :param no_tqdm: If True, will not display a progress bar. If False, will display a progress bar.
     """
-    if new_column_name in df.columns and not overwrite:
-        raise ValueError(
-            f"Column '{new_column_name}' already exists in the DataFrame. Set 'overwrite=True' to overwrite it."
-        )
+    column_exists = new_column_name in df.columns
+    if not column_exists:
+        df[new_column_name] = float("nan")
+
+    if column_exists and not overwrite:
+        rows_to_fetch = df.index[df[new_column_name].isna()]
+        if len(rows_to_fetch) == 0:
+            _logger.info("'%s' already fully cached - nothing to fetch", new_column_name)
+            return
+    else:
+        rows_to_fetch = df.index
+
+    urls = df.loc[rows_to_fetch, url_column_name]
+
+    rate_limiter = KeyedRateLimiter(max_wait_s=None, throttle_mode=1)
+
     with ThreadPoolExecutor(max_workers=max_worker_count) as executor:
-        df[new_column_name] = list(
-            tqdm(
-                executor.map(
-                    lambda url: (
-                        retrieve_resource_length_in_bytes(url, session) / (1024 * 1024)
-                        if pd.notnull(url)
-                        else 0
-                    ),
-                    df[url_column_name],
-                ),
-                total=len(df[url_column_name]),
-            )
-        )
+        future_to_idx = {
+            (
+                executor.submit(retrieve_resource_length_in_bytes, url, rate_limiter, session)
+                if pd.notnull(url)
+                else executor.submit(lambda: 0.0)  # Return 0 for null URLs
+            ): idx
+            for idx, url in urls.items()
+        }
+        for future in tqdm(as_completed(future_to_idx), total=len(future_to_idx), disable=no_tqdm):
+            idx = future_to_idx[future]
+            try:
+                result = future.result(timeout=61)
+                df.loc[idx, new_column_name] = result if result is not None else 0.0
+            except Exception as e:
+                _logger.error("Error retrieving resource length for row %s: %s", idx, e)
+                df.loc[idx, new_column_name] = 0.0
 
 
 def classify_audio_source(url: str | None) -> str | None:
@@ -334,7 +360,7 @@ def download_resources(
     :param overwrite: If True, will overwrite the new column if it already exists. If False, will raise an error if the new column already exists.
     """
     destination_dir.mkdir(parents=True, exist_ok=True)
-    rate_limiter = KeyedRateLimiter()
+    rate_limiter = KeyedRateLimiter(max_wait_s=60.0, throttle_mode=1)
     with ThreadPoolExecutor(max_workers=max_worker_count) as executor:
         futures = [
             executor.submit(
@@ -354,22 +380,29 @@ def download_resources(
 class TUI:
     """sermon-scraper interactive tool."""
 
-    commands = ["calculate", "download", "load", "report", "show", "quit"]
+    commands = ["calculate", "download", "load", "log_level", "report", "show", "quit"]
+    logger_names = ["sermon_scraper.rate_limit"]
 
-    def __init__(self, max_retry_count: int = 3, max_worker_count: int = 16) -> None:
+    def __init__(self, max_worker_count: int = 16) -> None:
         """Initialize the TUI."""
         self._df: pd.DataFrame | None = None
-        self._max_retry_count = max_retry_count
         self._max_worker_count = max_worker_count
-        self.should_exit = False
 
         # Requests session w/ multiple workers to speed up resource downloads.
         self._session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(
-            max_retries=max_worker_count, pool_maxsize=max_worker_count
-        )
+        retry = RetryAdjustedforRateLimiter
+        adapter = requests.adapters.HTTPAdapter(max_retries=retry, pool_maxsize=max_worker_count)
         self._session.mount("http://", adapter)
         self._session.mount("https://", adapter)
+
+        self._loggers: list[logging.Logger] = [
+            logging.getLogger(name) for name in self.logger_names
+        ]
+        self._handler = logging.StreamHandler()
+        self._formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        self._handler.setFormatter(self._formatter)
+        for logger in self._loggers:
+            logger.addHandler(self._handler)
 
     @plac.annotations(
         series=plac.Annotation(
@@ -507,13 +540,29 @@ class TUI:
             self._df[slug] = df[col]
 
     @plac.annotations(
+        log_level=plac.Annotation(
+            "Logging level (default INFO).",
+            type=log_level_type,
+        ),
+    )
+    def log_level(self, log_level: int) -> None:
+        """Set the logging level for the TUI.
+
+        :param log_level: Logging level (default INFO).
+        """
+        for logger in self._loggers:
+            logger.setLevel(log_level)
+        self._handler.setLevel(log_level)
+
+    @plac.annotations(
         mode=plac.Annotation(
             help="The mode of resources to calculate sizes for. Can be 'notes', 'audio', 'video', or "
             "'source' (divides audio by hosting source).",
             choices=[NOTES_KEY, AUDIO_KEY, VIDEO_KEY, SOURCE_MODE],
         ),
         overwrite=plac.Annotation(
-            help="If True, will overwrite the size column if it already exists. If False, will raise an error if the size column already exists.",
+            help="If True, re-fetch and overwrite every row, including already-cached ones. If "
+            "False (default), only fetch rows missing a value - cached values are reused.",
             type=bool,
             kind="flag",
         ),
@@ -523,6 +572,8 @@ class TUI:
 
         :param mode: The mode of resources to calculate sizes for. Can be 'notes', 'audio', 'video',
             or 'source'.
+        :param overwrite: If True, re-fetch and overwrite every row, including already-cached ones.
+            If False (default), only fetch rows missing a value - cached values are reused.
         """
         if self._df is None:
             _console.print("[red]Error:[/red] No CSV file loaded. Please load a CSV file first.")
@@ -562,6 +613,7 @@ class TUI:
             new_column_name=new_column_name,
             overwrite=overwrite,
             session=self._session,
+            no_tqdm=self._handler.level < logging.INFO,
         )
         _console.print(
             f"[green]Calculated sizes for '{mode}' resources and stored in column '{new_column_name}'.[/green]"
@@ -626,16 +678,23 @@ class TUI:
     def quit(self) -> None:
         """Save the current data to the DEFAULT_CSV and exit the TUI."""
         self.save(DEFAULT_CSV)
-        self.load(None)
-        self.should_exit = True
+        self.load("None")
+        raise plac.Interpreter.Exit
 
 
 @plac.annotations(
     csv_file=csv_file_annotation,
+    log_level=plac.Annotation(
+        "Logging level (default INFO).",
+        type=log_level_type,
+        kind="option",
+        abbrev="l",
+    ),
 )
-def main(csv_file: Path | None = None) -> None:
+def main(csv_file: Path | None = None, log_level: int = logging.INFO) -> None:
     """Run the sermon-scraper TUI."""
     tui = TUI()
+    tui.log_level(log_level)
 
     # Optionally load file
     if csv_file is None:
