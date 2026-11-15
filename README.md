@@ -48,13 +48,6 @@ I've got the login for the backend of Ekklesia now. It seems easier? An easily d
 of the database is available, so I'll just grab that and go from there? Maybe I can scrape an
 identical csv from subsplash...
 
-# Usage
-
-To run the `explore.py` script and poke around at the data downloaded from Ekklesia and Subsplash, run:
-```
-uv run jupyter lab notebooks/###.ipynb
-```
-
 # How-to Instructions
 
 The following are some quick-start howtos to perform certain tasks.
