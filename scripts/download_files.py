@@ -1,7 +1,6 @@
 """Script to download all of the files specified in a given .csv.
 
-This script copies the target .csv into the target directory, then downloads all of the files
-into that directory. Files targeted are all of the links in the "audio" column.
+See `main.__doc__` for usage details.
 """
 
 import logging
@@ -47,19 +46,19 @@ def clean_df_ekklesia(df: pd.DataFrame) -> None:
 
 @plac.annotations(
     csv_path=plac.Annotation(
-        "Path to the .csv file containing the links to download",
+        "Input .csv filepath",
         type=Path,
     ),
     target_dir=plac.Annotation(
-        "Path to the directory where the files will be downloaded",
+        "Output directory filepath",
         type=Path,
     ),
     source=plac.Annotation(
-        "Source of the .csv file, either 'ekklesia' or 'subsplash'",
+        "`csv_path` source website",
         choices=["ekklesia", "subsplash"],
     ),
     no_cache=plac.Annotation(
-        "If set, will not use cached files and will re-download all files",
+        "If set, will download all files, overwriting any existing data.",
         type=bool,
     ),
 )
@@ -71,6 +70,18 @@ def main(
 ) -> None:
     """Download all of the files specified by a given .csv file assumed to be downloaded from
     Ekklesia or Subsplash.
+
+    :param csv_path: The .csv file containing the links to download.
+    :param target_dir: The directory where the files will be downloaded. After the script completes.
+        this directory will contain:
+        - download.log: A log file containing the download status of each file.
+        - {csv_path.name}_clean.csv: A cleaned version of the original .csv file
+        - All of the downloaded files.
+    :param source: The source of the .csv file, either "ekklesia" or "subsplash". This setting
+        determines how the .csv file is cleaned.
+    :param no_cache: If set, will not use cached files and will re-download all files. Only set this
+        flag if you want to re-download everything, otherwise running the script on the same
+        directory twice will merely update it.
     """
     # Set up logger
     _handler = logging.FileHandler(target_dir / "download.log", mode="a", encoding="utf-8")
