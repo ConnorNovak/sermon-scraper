@@ -6,23 +6,23 @@ site's own JSON API.
 
 import json
 import logging
-import re
-import shutil
+import pdb
 import time
 from collections.abc import Iterator
 from datetime import datetime
-from difflib import get_close_matches
 from pathlib import Path
 
+import pandas as pd
 import plac  # type: ignore [import-untyped]
 import requests
 from mutagen.id3 import APIC, ID3, TALB, TCON, TDRC, TIT2, TPE1, ID3NoHeaderError
 from playwright.sync_api import sync_playwright
-from pydantic import BaseModel
 from tqdm import tqdm
 
-from .ui.cli import output_dir_annotation, prompt_choice, prompt_yes_no
-from .utilities import slugify
+from .constants import REQUEST_TIMEOUT
+from .models import SermonResource
+from .ui.cli import output_dir_annotation, prompt_yes_no
+from .utilities import log_level_type, slugify
 
 _logger = logging.getLogger(__name__)
 
@@ -42,11 +42,13 @@ PAGE_SIZE = 50
 
 
 def get_guest_token() -> str:
-    """Load a real page in a headless browser and pull the guest bearer
-    token subsplash's frontend mints for itself out of localStorage.
-    Avoids reverse-engineering the token-mint POST body (client_secret
-    lives in a minified JS bundle and isn't worth chasing for a one-off
-    script)."""
+    """Load a real page in a headless browser and pull the guest bearer token subsplash's frontend
+    mints for itself out of localStorage.
+
+    Avoids reverse-engineering the token-mint POST body (client_secret lives in minified JS bundle).
+
+    :return: The guest bearer token string.
+    """
     target_url = f"https://subsplash.com/u/{ORG_SLUG}/media/l/a3f0dc4-matthew"
     _logger.debug("fetching guest token from %s", target_url)
     with sync_playwright() as p:
@@ -60,8 +62,10 @@ def get_guest_token() -> str:
         page.wait_for_timeout(3000)
         token = page.evaluate("() => localStorage.getItem('guest_token')")
         browser.close()
+
     if not token:
         raise RuntimeError("could not extract guest_token from localStorage")
+
     return token
 
 
@@ -70,7 +74,7 @@ def get_guest_token() -> str:
 
 def api_get(session: requests.Session, url: str, params: dict | None = None) -> dict:
     """Wrapper around requests.get() that raises for HTTP errors and returns the JSON body."""
-    rsp = session.get(url, params=params)
+    rsp = session.get(url, params=params, timeout=REQUEST_TIMEOUT)
     rsp.raise_for_status()
     time.sleep(REQUEST_DELAY_SECONDS)
     return rsp.json()
@@ -108,7 +112,7 @@ def list_all_series(
     return list(paginate(session, url, params, "media-series"))
 
 
-def list_episodes(session: requests.Session, series_id: str):
+def list_series_media_items(session: requests.Session, series_id: str):
     url = f"{API_BASE}/media/v1/media-items"
     params = {
         "filter[media_series]": series_id,
@@ -120,7 +124,101 @@ def list_episodes(session: requests.Session, series_id: str):
     return list(paginate(session, url, params, "media-items"))
 
 
+# --- Ekklesia CSV export -----------------------------------------------------
+
+
+def episode_to_resource(series_title: str, episode: dict) -> SermonResource | None:
+    """Convert one Subsplash media-item into an EkklesiaResource row.
+
+    :param series_title: Title of the series this episode belongs to.
+    :param episode: Raw Subsplash media-item dict, as returned by :func:`list_series_media_items`.
+    :return: The converted resource, or None if a required field (audio URL, legacy_id) is
+        missing - logged as a warning rather than raising, so one bad episode doesn't kill
+        the whole export.
+    """
+    return SermonResource(
+        audio=get_mp3_url(episode),
+        date=get_date(episode),
+        notes=None,  # subsplash doesn't expose a distinct notes/document URL yet
+        sermon_id=get_id(episode),
+        sermon_title=episode["title"],
+        series=series_title,
+        speaker=episode.get("speaker") or "Unknown",
+        video=get_video_url(episode),
+    )
+
+
+@plac.annotations(
+    output_file=plac.Annotation("Path to write the Ekklesia-format CSV to.", type=Path),
+    log_level=plac.Annotation(
+        "Logging level (default INFO).",
+        type=log_level_type,
+    ),
+)
+def export_csv(output_file: Path, log_level: int = logging.INFO) -> None:
+    """Crawl every Subsplash series/episode and write it out as an Ekklesia-format CSV.
+
+    Resource-size columns (audio_size_mb, video_size_mb, notes_size_mb) are left blank -
+    fill those in afterward via the TUI's 'calculate' command.
+
+    :param output_file: Path to write the CSV to.
+    """
+    token = get_guest_token()
+    session = requests.Session()
+    session.headers["Authorization"] = f"Bearer {token}"
+
+    series_list = list_all_series(session)
+    _logger.info("found %d series", len(series_list))
+
+    resources: list[SermonResource] = []
+    for series in series_list:
+        if series.get("media_items_count", 0) == 0:
+            _logger.debug("skipping series '%s' (no episodes)", series["title"])
+            continue
+
+        episodes = list_series_media_items(session, series["id"])
+        _logger.info("series '%s': %d episodes", series["title"], len(episodes))
+        for episode in episodes:
+            resource = episode_to_resource(series["title"], episode)
+            if resource is not None:
+                resources.append(resource)
+
+    df = pd.DataFrame([r.model_dump(mode="json") for r in resources])
+    df = df[list(SermonResource.model_fields)]  # enforce the model's declared column order
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_file, index=False)
+    _logger.info("wrote %d rows to %s", len(df), output_file)
+
+
 # --- Extraction helpers -----------------------------------------------------
+
+
+def get_date(episode: dict) -> datetime:
+    try:
+        return episode["date"]
+    except KeyError as e1:
+        _logger.debug("%s has no date field, using 'created_at'", episode.get("id"))
+        try:
+            return episode["created_at"]
+        except KeyError as e2:
+            _logger.error(
+                "%s has no created_at field either, dropping into pdb to analyze", episode.get("id")
+            )
+            pdb.set_trace()
+            raise e2 from e1
+
+
+def get_id(episode: dict) -> int | None:
+    """Extract the legacy sermon_id from a Subsplash media-item dict.
+
+    :param episode: Raw Subsplash media-item dict, as returned by :func:`list_series_media_items`.
+    :return: The legacy sermon_id, or None if not found.
+    """
+    try:
+        return episode["legacy_id"]
+    except KeyError:
+        _logger.debug("%s has no legacy_id field", episode.get("id"))
+        return None
 
 
 def get_mp3_url(episode: dict) -> str | None:
@@ -137,7 +235,7 @@ def get_mp3_url(episode: dict) -> str | None:
                 episode.get("id"),
             )
     except KeyError, IndexError:
-        _logger.warning(
+        _logger.debug(
             "%s has no embedded audio, falling back to external_audio_url",
             episode.get("id"),
         )
@@ -184,7 +282,7 @@ def get_image_extension(episode: dict) -> str:
 
 
 def download_file(session: requests.Session, url: str, dest: Path):
-    resp = session.get(url, stream=True)
+    resp = session.get(url, stream=True, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     total = int(resp.headers.get("content-length", 0))
     with (
@@ -290,7 +388,7 @@ def process_episode(
             cover_fetched = True
             if image_url:
                 try:
-                    resp = session.get(image_url)
+                    resp = session.get(image_url, timeout=REQUEST_TIMEOUT)
                     resp.raise_for_status()
                     cover_bytes = resp.content
                 except requests.RequestException as e:
@@ -345,7 +443,7 @@ def process_series(
     nocache: bool,
 ) -> None:
     series_dir = output_dir / slugify(f"{body['title']}-{body['short_code']}")
-    episodes = list_episodes(session, body["id"])
+    episodes = list_series_media_items(session, body["id"])
     _logger.info("found series: '%s' (%d)", body["title"], len(episodes))
     for episode in episodes:
         process_episode(
@@ -359,39 +457,6 @@ def process_series(
             nocache=False,
         )
     return
-
-
-def write_series_list(output_file: Path) -> None:
-    """Write the list of available series to a text file."""
-    print("fetching guest token...")
-    token = get_guest_token()
-
-    session = requests.Session()
-    session.headers["Authorization"] = f"Bearer {token}"
-
-    print("listing series...")
-    series_list = list_all_series(session)
-    print(f"found {len(series_list)} series")
-
-    duplicate_titles: dict[str, int] = {}
-    for series in series_list:
-        title = series["title"]
-        if title in duplicate_titles:
-            duplicate_titles[title] += 1
-        else:
-            duplicate_titles[title] = 1
-
-    print("duplicate series titles:")
-    for title, count in duplicate_titles.items():
-        if count > 1:
-            print(f"  {title}: {count} duplicates")
-
-    def media_items_count(series: dict) -> int:
-        return series.get("media_items_count", 0)
-
-    with open("series.txt", "w") as f:
-        for series in sorted(series_list, key=media_items_count, reverse=True):
-            f.write(f"{series['title']} ({series['media_items_count']} episodes)\n")
 
 
 @plac.annotations(
@@ -440,7 +505,7 @@ def download_all(
         series_title = series["title"]
         series_dir = output_dir / slugify(f"{series_title}-{series['short_code']}")
 
-        episodes = list_episodes(session, series["id"])
+        episodes = list_series_media_items(session, series["id"])
         _logger.info("found series: '%s' (%d)", series_title, len(episodes))
         for episode in episodes:
             process_episode(
@@ -455,272 +520,5 @@ def download_all(
             )
 
 
-@plac.annotations(
-    series_slug=plac.Annotation("series slug to download (e.g. 'matthew')", "positional"),
-    output_dir=output_dir_annotation,
-)
-def download_series(
-    series_slug: str,
-    output_dir: Path = OUTPUT_DIR,
-) -> None:
-    """Download a single series by its slug (e.g. "matthew")."""
-    if not output_dir.exists() and not prompt_yes_no(
-        f"Output directory '{output_dir}' does not exist. Create it?"
-    ):
-        raise RuntimeError(f"Output directory '{output_dir}' does not exist.")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    token = get_guest_token()
-    session = requests.Session()
-    session.headers["Authorization"] = f"Bearer {token}"
-
-    series_list = list_all_series(session)
-    series_slugs = [s.get("slug", "") for s in series_list]
-    matches = get_close_matches(series_slug, series_slugs, n=3, cutoff=0.6)
-    if len(matches) > 1:
-        _logger.info("%d series match slug '%s':", len(matches), series_slug)
-        match = matches[prompt_choice(matches)]
-    elif len(matches) == 0:
-        raise RuntimeError(f"No series match slug '{series_slug}'")
-    else:
-        match = matches[0]
-    idx = series_slugs.index(match)
-    series = series_list[idx]
-    series_dir = output_dir / slugify(f"{series['title']}-{series['short_code']}")
-    episodes = list_episodes(session, series["id"])
-    _logger.info("found series: '%s' (%d)", series["title"], len(episodes))
-    for episode in episodes:
-        process_episode(
-            session,
-            series["title"],
-            episode,
-            series_dir,
-            want_audio=True,
-            want_video=False,
-            want_images=False,
-            nocache=False,
-        )
-    return
-
-
-class Scripture(BaseModel):
-    """Schema for a parsed scripture reference."""
-
-    book: str
-    chapter: str
-    start_verse: str
-    end_verse: str
-
-
-class Speaker(BaseModel):
-    """Schema for a parsed speaker name."""
-
-    title: str | None
-    first_name: str
-    last_name: str
-
-
-def _parse_scripture(scripture: str) -> Scripture:
-    """Parse a scripture string into its components: book, chapter, start verse, end verse.
-
-    Example: "1 Samuel 14:1-23"
-
-    :param scripture: Scripture string in the format "Book Chapter:StartVerse-EndVerse"
-    :return: Scripture dataclass parsed from the string
-    """
-    match = re.match(
-        r"(?P<book>[A-Za-z0-9 ]+) (?P<chapter>\d+):(?P<start_verse>\d+)(-(?P<end_verse>\d+))?",
-        scripture,
-    )
-
-    if not match:
-        raise ValueError(f"Invalid scripture format: '{scripture}'")
-
-    return Scripture(
-        book=match.group("book").replace(" ", "-"),
-        chapter=match.group("chapter"),
-        start_verse=match.group("start_verse"),
-        end_verse=match.group("end_verse") or match.group("start_verse"),
-    )
-
-
-def _parse_speaker(speaker: str) -> Speaker:
-    """Parse a speaker string into its components: title, first name, last name.
-
-    Example: "Pastor John Doe"
-
-    :param speaker: Speaker string in the format "[Title] FirstName LastName"
-    :return: Speaker dataclass parsed from the string
-    """
-    # Catch known bad data and correct it
-    if speaker == "Passss Reinman":
-        speaker = "Pastor Ross Reinman"
-
-    parts = speaker.split()
-    if len(parts) < 2:
-        raise ValueError(f"Invalid speaker format: '{speaker}'")
-
-    title = parts[0] if len(parts) > 2 else None
-    first_name = parts[-2] if title else parts[0]
-    last_name = parts[-1]
-
-    return Speaker(title=title, first_name=first_name, last_name=last_name)
-
-
-def _parse_title(title: str) -> str:
-    """Parse a title string
-
-    Currently per Spencer's format, we don't need to modify the title.
-
-    :param title: Title string
-    :return: Slugified title string
-    """
-    return title
-
-
-@plac.annotations(
-    target_dir=plac.Annotation(
-        "Directory of downloaded sermons to convert and rename.",
-        type=Path,
-    ),
-    dry_run=plac.Annotation(
-        "Print the proposed renames without actually renaming files.", kind="flag"
-    ),
-    output_dir=output_dir_annotation,
-    replace=plac.Annotation(
-        "Replace the files in the output directory instead of copying them.", kind="flag"
-    ),
-)
-def rename_files(
-    target_dir: Path,
-    dry_run: bool = False,
-    output_dir: Path | None = None,
-    replace: bool = False,
-) -> None:
-    """Rename the downloaded .mp3 files to Spencer's format using the related .json file.
-
-    Spencer's format:
-        [BOOK]_[CHAPTER]([START_VERSE]-[END_VERSE])_[PREACHER]_[YEAR]-[MONTH]-[DAY]_[SERMON_TITLE].mp3
-
-    :param target_dir: Directory containing the downloaded sermon files.
-    :param dry_run: If True, print the proposed renames without actually renaming files.
-    :param output_dir: Optional directory to move the renamed files into. If not provided, files will be renamed in place.
-    :param copy: If True, copy the files to the output directory instead of moving them.
-    """
-    if not target_dir.exists():
-        raise FileNotFoundError(f"Target directory '{target_dir}' does not exist.")
-    if output_dir is None:
-        output_dir = target_dir
-
-    if not output_dir.exists():
-        if not prompt_yes_no(f"Output directory '{output_dir}' does not exist. Create it?"):
-            raise RuntimeError(f"Output directory '{output_dir}' does not exist.")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    file_plan: list[tuple[Path, Path]] = []
-    for slug in set(f.stem for f in target_dir.glob("*.mp3")):
-        json_file = target_dir / f"{slug}.json"
-        mp3_file = target_dir / f"{slug}.mp3"
-        with open(json_file, "r") as f:
-            metadata = json.load(f)
-
-        scripture = _parse_scripture(metadata["scripture"])
-        speaker = _parse_speaker(metadata["speaker"])
-        date = datetime.fromisoformat(metadata["date"])
-        title = _parse_title(metadata["title"])
-
-        filename = f"{scripture.book}_{scripture.chapter}({scripture.start_verse}-{scripture.end_verse})_{speaker.first_name}_{date.year}-{date.month:02d}-{date.day:02d}_{title}.mp3"
-        file_plan.append((mp3_file, output_dir / filename))
-
-    if dry_run:
-        col_1_len = max(len(src.name) for src, dst in file_plan)
-        col_2_len = max(len(dst.name) for src, dst in file_plan)
-        print("Dry run: proposed renames:")
-        print(f"--{'-' * col_1_len}---{'-' * col_2_len}--")
-        print(f"| {'Current Name':{col_1_len}} | New Name{' ' * (col_2_len - 8)} |")
-        print(f"--{'-' * col_1_len}---{'-' * col_2_len}--")
-        for src, dst in file_plan:
-            print(f"| {src.name:{col_1_len}} | {dst.name:{col_2_len}} |")
-        print(f"--{'-' * col_1_len}---{'-' * col_2_len}--")
-    else:
-        for old_path, new_path in file_plan:
-            if not replace:
-                shutil.copy2(old_path, new_path)
-            else:
-                old_path.rename(new_path)
-            print(f"Renamed: {old_path} | {new_path}")
-
-
-@plac.annotations(
-    target_dir=plac.Annotation(
-        "Directory of downloaded sermons to convert and rename.",
-        type=Path,
-    ),
-    dry_run=plac.Annotation(
-        "Print the proposed renames without actually renaming files.", kind="flag"
-    ),
-    output_dir=output_dir_annotation,
-    replace=plac.Annotation(
-        "Replace the files in the output directory instead of copying them.", kind="flag"
-    ),
-)
-def generate_drew_csv(
-    target_dir: Path,
-    dry_run: bool = False,
-    output_dir: Path | None = None,
-    replace: bool = False,
-) -> None:
-    """Generate a CSV mapping of .mp3 files to metadata compliant with Drew's desired format.
-
-    Drew's format:
-        file, book, chapter, [BOOK]_[CHAPTER]([START_VERSE]-[END_VERSE])_[PREACHER]_[YEAR]-[MONTH]-[DAY]_[SERMON_TITLE].mp3
-
-    :param target_dir: Directory containing the downloaded sermon files.
-    :param dry_run: If True, print the proposed renames without actually renaming files.
-    :param output_dir: Optional directory to move the renamed files into. If not provided, files will be renamed in place.
-    :param copy: If True, copy the files to the output directory instead of moving them.
-    """
-    if not target_dir.exists():
-        raise FileNotFoundError(f"Target directory '{target_dir}' does not exist.")
-    if output_dir is None:
-        output_dir = target_dir
-
-    if not output_dir.exists():
-        if not prompt_yes_no(f"Output directory '{output_dir}' does not exist. Create it?"):
-            raise RuntimeError(f"Output directory '{output_dir}' does not exist.")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    file_plan: list[tuple[Path, Path]] = []
-    for slug in set(f.stem for f in target_dir.glob("*.mp3")):
-        json_file = target_dir / f"{slug}.json"
-        mp3_file = target_dir / f"{slug}.mp3"
-        with open(json_file, "r") as f:
-            metadata = json.load(f)
-
-        scripture = _parse_scripture(metadata["scripture"])
-        speaker = _parse_speaker(metadata["speaker"])
-        date = datetime.fromisoformat(metadata["date"])
-        title = _parse_title(metadata["title"])
-
-        filename = f"{scripture.book}_{scripture.chapter}({scripture.start_verse}-{scripture.end_verse})_{speaker.first_name}_{date.year}-{date.month:02d}-{date.day:02d}_{title}.mp3"
-        file_plan.append((mp3_file, output_dir / filename))
-
-    if dry_run:
-        col_1_len = max(len(src.name) for src, dst in file_plan)
-        col_2_len = max(len(dst.name) for src, dst in file_plan)
-        print("Dry run: proposed renames:")
-        print(f"--{'-' * col_1_len}---{'-' * col_2_len}--")
-        print(f"| {'Current Name':{col_1_len}} | New Name{' ' * (col_2_len - 8)} |")
-        print(f"--{'-' * col_1_len}---{'-' * col_2_len}--")
-        for src, dst in file_plan:
-            print(f"| {src.name:{col_1_len}} | {dst.name:{col_2_len}} |")
-        print(f"--{'-' * col_1_len}---{'-' * col_2_len}--")
-    else:
-        for old_path, new_path in file_plan:
-            if not replace:
-                shutil.copy2(old_path, new_path)
-            else:
-                old_path.rename(new_path)
-            print(f"Renamed: {old_path} | {new_path}")
+if __name__ == "__main__":
+    plac.call(export_csv)
