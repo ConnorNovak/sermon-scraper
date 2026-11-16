@@ -3,6 +3,26 @@
 All notable changes to this project will be documented here.
 Format: [Semantic Versioning](https://semver.org)
 
+## [Unreleased]
+### Added
+- TUI `log_level` command and `-l`/`--log_level` option on `main.py`. They set the level of the
+    rate limiter's log messages, which the TUI now prints; `calculate` hides its progress bar at
+    `DEBUG` so the two do not collide.
+
+### Changed
+- `calculate` caches: a size column that already exists is only filled in for rows missing a
+    value, where it used to raise. `overwrite` re-fetches every row. A row whose size cannot be
+    fetched is logged and recorded as 0 rather than aborting the run.
+- `calculate` and `download` share one `KeyedRateLimiter` across their workers.
+- The TUI's session retries only 5xx responses, leaving 429s to the rate limiter, and `TUI` no
+    longer takes `max_retry_count`. **Breaking** for anything constructing `TUI` with it.
+
+### Fixed
+- The TUI's `quit` command saved the data but never left the prompt, since it set a flag nothing
+    read. It now raises `plac.Interpreter.Exit`.
+
+---
+
 ## [v0.3.0]
 ### Added
 - `scripts/download_files.py`, which downloads every link in the `audio` column of an Ekklesia
