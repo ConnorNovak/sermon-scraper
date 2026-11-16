@@ -5,7 +5,25 @@ to their metadata, which I also want to download.
 
 https://subsplash.com/calvarychapeltherock/sermons
 
-# Notebook
+# Developer Tooling
+
+## Formatting, Linting, Testing
+
+To format, lint and/or unittest the code, use the following commands:
+```
+uv run runner.py format
+uv run runner.py lint
+uv run runner.py test
+```
+
+## Set up Pre-commit Hook
+
+To automatically run the linter and checker on the code, run the following command from the repository root directory:
+```
+ln -sf ../../scripts/hooks/pre-commit .git/hooks/pre-commit
+```
+
+## Jupyter Notebooks
 
 I use Jupyter notebooks to explore data.
 
