@@ -18,6 +18,9 @@ Format: [Semantic Versioning](https://semver.org)
     `RateLimitedError` once `max_attempts` is spent.
 - `REQUEST_TIMEOUT` (5 s to connect, 30 s to read) in `sermon_scraper.constants`, passed to
     every `requests` call in `retrieve`.
+- `scripts/hooks/pre-commit`, a git hook that runs `runner.py format --nofix` and
+    `runner.py lint` and so rejects a commit that is unformatted or fails `mypy`. The README
+    documents installing it, and the `runner.py` commands, under "Developer Tooling".
 - `get_hostname`, `sort_by_host`, `log_level_type` and `parse_retry_after` in
     `sermon_scraper.utilities`. `parse_retry_after` reads both the delta-seconds and HTTP-date
     forms of `Retry-After`.
