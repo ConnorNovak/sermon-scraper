@@ -30,7 +30,8 @@ Format: [Semantic Versioning](https://semver.org)
 ### Changed
 - `retrieve_resource` and `retrieve_resource_length_in_bytes` moved from
     `sermon_scraper.utilities` to `sermon_scraper.retrieve`, and now take a `rate_limiter`.
-    **Breaking** for anything importing them from the old place.
+    **Breaking** for anything importing them from the old place. The TUI imports them from the
+    new place and passes `download_resources` a rate limiter.
 
 ### Removed
 - `scripts/temp.py` and the checked-in `data/sermonExportAug_03_2026.csv` export.
