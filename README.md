@@ -5,7 +5,25 @@ to their metadata, which I also want to download.
 
 https://subsplash.com/calvarychapeltherock/sermons
 
-# Notebook
+# Developer Tooling
+
+## Formatting, Linting, Testing
+
+To format, lint and/or unittest the code, use the following commands:
+```
+uv run runner.py format
+uv run runner.py lint
+uv run runner.py test
+```
+
+## Set up Pre-commit Hook
+
+To automatically run the linter and checker on the code, run the following command from the repository root directory:
+```
+ln -sf ../../scripts/hooks/pre-commit .git/hooks/pre-commit
+```
+
+## Jupyter Notebooks
 
 I use Jupyter notebooks to explore data.
 
@@ -47,3 +65,16 @@ scraping HTML, so `main.py` uses this instead of BeautifulSoup:
 I've got the login for the backend of Ekklesia now. It seems easier? An easily downloadable .csv
 of the database is available, so I'll just grab that and go from there? Maybe I can scrape an
 identical csv from subsplash...
+
+# How-to Instructions
+
+The following are some quick-start howtos to perform certain tasks.
+
+## Download all of the .mp3 files and metadata from Ekklesia
+
+1. Download the Ekklesia .csv (see instructions in ./data/ekklesia/README.md)
+
+2. Run the download_files script.
+```
+uv run scripts/download_files.py ./data/ekklesia/sermonExportSeb_22_2026.csv ./data/ekklesia/sermons/
+```

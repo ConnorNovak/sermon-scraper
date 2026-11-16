@@ -16,7 +16,9 @@ from rich.table import Table
 from tqdm import tqdm
 
 from ..constants import DEFAULT_CSV
-from ..utilities import retrieve_resource, retrieve_resource_length_in_bytes, slugify
+from ..rate_limit import KeyedRateLimiter
+from ..retrieve import retrieve_resource, retrieve_resource_length_in_bytes
+from ..utilities import slugify
 from .cli import csv_file_annotation
 from .dialog import (
     get_directory,
@@ -332,12 +334,14 @@ def download_resources(
     :param overwrite: If True, will overwrite the new column if it already exists. If False, will raise an error if the new column already exists.
     """
     destination_dir.mkdir(parents=True, exist_ok=True)
+    rate_limiter = KeyedRateLimiter()
     with ThreadPoolExecutor(max_workers=max_worker_count) as executor:
         futures = [
             executor.submit(
                 retrieve_resource,
                 resource[0],
                 destination_dir / (resource[1] + resource[0][-4:]),
+                rate_limiter,
                 session=session,
             )
             for resource in resources
