@@ -5,9 +5,10 @@ Format: [Semantic Versioning](https://semver.org)
 
 ## [v0.2.0]
 ### Added
-- `notebooks/subsplash-ekklesia-compare.ipynb`, for comparing the Subsplash and Ekklesia data
-    side by side, with `jupyterlab` as a dev dependency and `dtale` and `matplotlib` as
-    dependencies to run it.
+- `notebooks/` folder for `.ipynb` files used to explore the captured data.
+- A new notebook: `subsplash-ekklesia-compare.ipynb`, for comparing the Subsplash and Ekklesia data
+    side by side, with `jupyterlab` as a dev dependency and `dtale` and `matplotlib` as dependencies
+    to run it.
 
 ---
 
