@@ -12,3 +12,6 @@ wheels/
 # Further stuff
 .DS_Store
 data/*
+
+# Jupyter
+.ipynb_checkpoints/
