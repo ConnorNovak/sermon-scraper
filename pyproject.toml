@@ -1,6 +1,6 @@
 [project]
 name = "sermon-scraper"
-version = "0.2.0"
+version = "0.3.0"
 description = "Tooling to download and organize audio files of sermons for CCTheRock from various sources."
 readme = "README.md"
 requires-python = ">=3.14"

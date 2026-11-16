@@ -3,7 +3,7 @@
 All notable changes to this project will be documented here.
 Format: [Semantic Versioning](https://semver.org)
 
-## [Unreleased]
+## [v0.3.0]
 ### Added
 - `scripts/download_files.py`, which downloads every link in the `audio` column of an Ekklesia
     CSV into a target directory. It copies the cleaned CSV there, skips files already present
