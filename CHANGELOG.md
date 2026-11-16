@@ -3,6 +3,28 @@
 All notable changes to this project will be documented here.
 Format: [Semantic Versioning](https://semver.org)
 
+## [Unreleased]
+### Added
+- `SermonResource`, one pydantic model for a sermon row from either Ekklesia or Subsplash,
+    including optional `audio_size_mb`, `video_size_mb` and `notes_size_mb`.
+- `subsplash.export_csv` crawls every series and episode and writes them as `SermonResource`
+    rows, in the same columns as the Ekklesia export. Run it with
+    `python -m sermon_scraper.subsplash <output.csv>`.
+
+### Changed
+- `subsplash.list_episodes` is `subsplash.list_series_media_items`. **Breaking** for anything
+    importing it.
+
+### Removed
+- `subsplash.download_series`, `write_series_list`, `rename_files` and `generate_drew_csv`, and
+    the `Scripture` and `Speaker` models that served the renaming. Nothing called them.
+
+### Fixed
+- Requests no longer hang forever: `subsplash.api_get`, `download_file` and `fetch_cover` had no
+    timeout.
+
+---
+
 ## [v0.3.0]
 ### Added
 - `scripts/download_files.py`, which downloads every link in the `audio` column of an Ekklesia
