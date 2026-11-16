@@ -5,7 +5,18 @@ to their metadata, which I also want to download.
 
 https://subsplash.com/calvarychapeltherock/sermons
 
-Notes:
+# Notebook
+
+I use Jupyter notebooks to explore data.
+
+To run the jupyter server in the current environment, run:
+```
+uv run jupyter lab
+```
+
+Then open the notebook in your browser at http://localhost:8888/lab
+
+# Notes
 - Site is fully server-site rendering, meaning that the server sends full HTML pages, no nedd for 
 JS rendering
 - Unable to find a sitemap.xml (robots.txt points to a sitemap.xml, but it doesn't exist)
